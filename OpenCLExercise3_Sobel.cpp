@@ -24,27 +24,24 @@
 // CPU implementation
 //////////////////////////////////////////////////////////////////////////////
 float maximum = 0.0f;
-int structure_element[3][3] = { {1,1,1},
+int structure_element[3][3] = { {0,1,0},
 								 {1,1,1},
-								 {1,1,1}
+								 {0,1,0}
 };
-int getIndexGlobal(std::size_t countX, int i, int j) {
-	return j * countX + i;
-}
 
 float getValueGlobal(const std::vector<float>& a, std::size_t countX, std::size_t countY, int i, int j) {
 	if (i < 0 || (size_t)i >= countX || j < 0 || (size_t)j >= countY)
 		return 0;
 	else
-		return a[getIndexGlobal(countX, i, j)];
+		return a[j*countX + i];
 }
-
-void sobelHost(const std::vector<float>& h_input, std::vector<float>& h_outputCpu, std::size_t countX, std::size_t countY) {
+void dilation(const std::vector<float>& h_input, std::vector<float>& h_outputDilationCpu, std::size_t countX, std::size_t countY) {
+	float maximum = 0.0f;
 	for (int i = 0; i < (int)countX; i++)
 	{
 		for (int j = 0; j < (int)countY; j++)
 		{
-			maximum = 0;
+			maximum = 0.0f;
 			for (int x = -1; x <= 1; x++)
 			{
 				for (int y = -1; y <= 1; y++)
@@ -52,14 +49,62 @@ void sobelHost(const std::vector<float>& h_input, std::vector<float>& h_outputCp
 					float pixelValue = getValueGlobal(h_input, countX, countY, x + i, y + j);
 					if (structure_element[x + 1][y + 1] == 1)
 					{
-						maximum = max(maximum, pixelValue);
+						
+						if (maximum > pixelValue)
+							maximum = maximum;
+						else
+							maximum = pixelValue;
 					}
 					
 				}
 			}
-			h_outputCpu[getIndexGlobal(countX, i, j)] = maximum;
+			h_outputDilationCpu[j * countX + i ] = maximum;
 		}
 	}
+}
+
+void erosion(const std::vector<float>& h_input, std::vector<float>& h_outputErosionCpu, std::size_t countX, std::size_t countY) {
+	float minimum = 1.0f;
+	for (int i = 0; i < (int)countX; i++)
+	{
+		for (int j = 0; j < (int)countY; j++)
+		{
+			minimum = 1.0f;
+			for (int x = -1; x <= 1; x++)
+			{
+				for (int y = -1; y <= 1; y++)
+				{
+					float pixelValue = getValueGlobal(h_input, countX, countY, x + i, y + j);
+					if (structure_element[x + 1][y + 1] == 1)
+					{
+
+						if (minimum < pixelValue)
+							minimum = minimum;
+						else
+							minimum = pixelValue;
+					}
+
+				}
+			}
+			h_outputErosionCpu[j * countX + i] = minimum;
+		}
+	}
+}
+
+void opening(const std::vector<float>& h_input, std::vector<float>& h_outputOpeningCpu, std::size_t countX, std::size_t countY)
+{
+	std::size_t count1 = countX * countY;
+	std::vector<float> h_temp(count1);
+	erosion(h_input, h_temp, countX, countY);
+	dilation(h_temp, h_outputOpeningCpu, countX, countY);
+}
+
+void closing(const std::vector<float>& h_input, std::vector<float>& h_outputClosingCpu, std::size_t countX, std::size_t countY)
+{
+	std::size_t count1 = countX * countY;
+	std::vector<float> h_temp1(count1);
+	dilation(h_input, h_temp1, countX, countY);
+	erosion(h_temp1, h_outputClosingCpu, countX, countY);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -107,28 +152,64 @@ int main(int argc, char** argv) {
 	// Declare some values /// can increase the size -- SUMIT 
 	std::size_t wgSizeX = 20; // Number of work items per work group in X direction
 	std::size_t wgSizeY = 20;
-	std::size_t countX = wgSizeX ; // Overall number of work items in X direction = Number of elements in X direction
-	std::size_t countY = wgSizeY ;
+	std::size_t countX = wgSizeX; // Overall number of work items in X direction = Number of elements in X direction
+	std::size_t countY = wgSizeY;
 	//countX *= 3; countY *= 3;
 	std::size_t count = countX * countY; // Overall number of elements
 	std::size_t size = count * sizeof(float); // Size of data in bytes
 
 	// Allocate space for output data from CPU and GPU on the host
 	std::vector<float> h_input(count);
-	std::vector<float> h_outputCpu(count);
-	std::vector<float> h_outputGpu(count);
+	std::vector<float> h_outputDilationCpu(count);
+	std::vector<float> h_outputErosionCpu(count);
+
+	std::vector<float> h_outputOpeningCpu(count);
+	std::vector<float> h_outputClosingCpu(count);
+
+	std::vector<float> h_outputDilationGpu(count);
+	std::vector<float> h_outputErosionGpu(count);
+
+	std::vector<float> h_outputOpeningGpu(count);
+	std::vector<float> h_outputClosingGpu(count);
+	
+	std::vector<float> h_temp1(count);
+	std::vector<float> h_temp2(count);
 
 	// Allocate space for input and output data on the device
 	cl::Buffer d_input(context, CL_MEM_READ_WRITE, size);
-	cl::Buffer d_output(context, CL_MEM_READ_WRITE, size);
-
+	cl::Buffer d_outputDilation(context, CL_MEM_READ_WRITE, size);
+	cl::Buffer d_outputErosion(context, CL_MEM_READ_WRITE, size);
+	cl::Buffer d_outputOpening(context, CL_MEM_READ_WRITE, size);
+	cl::Buffer d_outputClosing(context, CL_MEM_READ_WRITE, size);
+	cl::Buffer d_temp1(context, CL_MEM_READ_WRITE, size);
+	cl::Buffer d_temp2(context, CL_MEM_READ_WRITE, size);
 	// Initialize memory to 0xff (useful for debugging because otherwise GPU memory will contain information from last execution)
 	memset(h_input.data(), 255, size);
-	memset(h_outputCpu.data(), 255, size);
-	memset(h_outputGpu.data(), 255, size);
+	memset(h_outputDilationCpu.data(), 255, size);
+	memset(h_outputErosionCpu.data(), 255, size);
+
+	memset(h_outputOpeningCpu.data(), 255, size);
+	memset(h_outputClosingCpu.data(), 255, size);
+
+    memset(h_outputDilationGpu.data(), 255, size);
+	memset(h_outputErosionGpu.data(), 255, size);
+
+	memset(h_outputOpeningGpu.data(), 255, size);
+	memset(h_outputClosingGpu.data(), 255, size);
+    
+	memset(h_temp2.data(), 255, size);
+	memset(h_temp1.data(), 255, size);
+
+
 	//TODO: GPU
 	queue.enqueueWriteBuffer(d_input, true, 0, size, h_input.data());
-	queue.enqueueWriteBuffer(d_output, true, 0, size, h_outputGpu.data());
+	queue.enqueueWriteBuffer(d_outputDilation, true, 0, size, h_outputDilationGpu.data());
+	queue.enqueueWriteBuffer(d_outputErosion, true, 0, size, h_outputErosionGpu.data());
+	queue.enqueueWriteBuffer(d_outputOpening, true, 0, size, h_outputOpeningGpu.data());
+	queue.enqueueWriteBuffer(d_outputClosing, true, 0, size, h_outputClosingGpu.data());
+	queue.enqueueWriteBuffer(d_temp1, true, 0, size, h_temp1.data());
+	queue.enqueueWriteBuffer(d_temp2, true, 0, size, h_temp2.data());
+
 
 	//////// Load input data ////////////////////////////////
 	// Use random input data
@@ -150,22 +231,34 @@ int main(int argc, char** argv) {
 
 	// Do calculation on the host side
 	Core::TimeSpan cpuStart = Core::getCurrentTime();
-	sobelHost(h_input, h_outputCpu, countX, countY);
-	Core::TimeSpan cpuEnd = Core::getCurrentTime();
+	dilation(h_input, h_outputDilationCpu, countX, countY);
+	erosion(h_input, h_outputErosionCpu, countX, countY);
+	opening(h_input, h_outputOpeningCpu, countX, countY);
+	closing(h_input, h_outputClosingCpu, countX, countY);
+    Core::TimeSpan cpuEnd = Core::getCurrentTime();
 
 	//////// Store CPU output image ///////////////////////////////////
-	Core::writeImagePGM("output_sobel_cpu_sumit.pgm", h_outputCpu, countX, countY);
-
+	Core::writeImagePGM("output_dilation_cpu_sumit.pgm", h_outputDilationCpu, countX, countY);
+	Core::writeImagePGM("output_erosion_cpu_sumit.pgm", h_outputErosionCpu, countX, countY);
+	Core::writeImagePGM("output_opening_cpu_sumit.pgm", h_outputOpeningCpu, countX, countY);
+	Core::writeImagePGM("output_closing_cpu_sumit.pgm", h_outputClosingCpu, countX, countY);
 	std::cout << std::endl;
 	// Iterate over all implementations (task 1 - 3)
 
 	std::cout << "Implementation #" << ":" << std::endl;
 
 	// Reinitialize output memory to 0xff
-	memset(h_outputGpu.data(), 255, size);
+	memset(h_outputDilationGpu.data(), 255, size);
+	memset(h_outputErosionGpu.data(), 255, size);
+	memset(h_outputOpeningGpu.data(), 255, size);
+	memset(h_outputClosingGpu.data(), 255, size);
+	memset(h_temp1.data(), 255, size);
+	memset(h_temp1.data(), 255, size);
 	//TODO: GPU
-	queue.enqueueWriteBuffer(d_output, true, 0, size, h_outputGpu.data());
-
+	queue.enqueueWriteBuffer(d_outputDilation, true, 0, size, h_outputDilationGpu.data());
+	queue.enqueueWriteBuffer(d_outputErosion, true, 0, size, h_outputErosionGpu.data());
+	queue.enqueueWriteBuffer(d_outputOpening, true, 0, size, h_outputOpeningGpu.data());
+	queue.enqueueWriteBuffer(d_outputClosing, true, 0, size, h_outputClosingGpu.data());
 	// Copy input data to device
 	cl::Event copy1;
 	cl::Image2D image;
@@ -181,25 +274,55 @@ int main(int argc, char** argv) {
 
 
 	// Create a kernel object
-	std::string kernelName = "sobelKernel";
-	cl::Kernel sobelKernel(program, kernelName.c_str());
+	std::string kernelName1 = "dilation";
+	std::string kernelName2 = "erosion";
+	std::string kernelName3 = "opening";
+	std::string kernelName4 = "closing";
+	cl::Kernel dilation(program, kernelName1.c_str());
+	cl::Kernel erosion(program, kernelName2.c_str());
+	cl::Kernel opening(program, kernelName3.c_str());
+	cl::Kernel closing(program, kernelName4.c_str());
 
 	// Launch kernel on the device
-	cl::Event execution;
+	cl::Event execution[4];
 
-	sobelKernel.setArg<cl::Image2D>(0, image);
-	sobelKernel.setArg<cl::Buffer>(1, d_output);
+	dilation.setArg<cl::Image2D>(0, image);
+	dilation.setArg<cl::Buffer>(1, d_outputDilation);
+    queue.enqueueNDRangeKernel(dilation, cl::NullRange, cl::NDRange(countX, countY), cl::NDRange(wgSizeX, wgSizeY), NULL, &execution[0]);
 
-	queue.enqueueNDRangeKernel(sobelKernel, cl::NullRange, cl::NDRange(countX, countY), cl::NDRange(wgSizeX, wgSizeY), NULL, &execution);
+	erosion.setArg<cl::Image2D>(0, image);
+	erosion.setArg<cl::Buffer>(1, d_outputErosion);
+	queue.enqueueNDRangeKernel(erosion, cl::NullRange, cl::NDRange(countX, countY), cl::NDRange(wgSizeX, wgSizeY), NULL, &execution[1]);
+
+	opening.setArg<cl::Image2D>(0, image);
+	opening.setArg<cl::Buffer>(1, d_outputOpening);
+	opening.setArg<cl::Buffer>(2, d_temp1);
+	queue.enqueueNDRangeKernel(opening, cl::NullRange, cl::NDRange(countX, countY), cl::NDRange(wgSizeX, wgSizeY), NULL, &execution[2]);
+
+	closing.setArg<cl::Image2D>(0, image);
+	closing.setArg<cl::Buffer>(1, d_outputClosing);
+	closing.setArg<cl::Buffer>(2, d_temp2);
+	queue.enqueueNDRangeKernel(closing, cl::NullRange, cl::NDRange(countX, countY), cl::NDRange(wgSizeX, wgSizeY), NULL, &execution[3]);
 
 	// Copy output data back to host
-	cl::Event copy2;
-	queue.enqueueReadBuffer(d_output, true, 0, size, h_outputGpu.data(), NULL, &copy2);
+	cl::Event copy2[4];
+	queue.enqueueReadBuffer(d_outputDilation, true, 0, size, h_outputDilationGpu.data(), NULL, &copy2[0]);
+	queue.enqueueReadBuffer(d_outputErosion, true, 0, size, h_outputErosionGpu.data(), NULL, &copy2[1]);
+	queue.enqueueReadBuffer(d_outputOpening, true, 0, size, h_outputOpeningGpu.data(), NULL, &copy2[2]);
+	queue.enqueueReadBuffer(d_outputClosing, true, 0, size, h_outputClosingGpu.data(), NULL, &copy2[3]);
 
 	// Print performance data
 	Core::TimeSpan cpuTime = cpuEnd - cpuStart;
-	Core::TimeSpan gpuTime = OpenCL::getElapsedTime(execution);
-	Core::TimeSpan copyTime = OpenCL::getElapsedTime(copy1) + OpenCL::getElapsedTime(copy2);
+
+	Core::TimeSpan gpuTime = Core::TimeSpan::fromSeconds(0);
+	for (std::size_t i = 0; i < sizeof(execution) / sizeof(*execution); i++)
+		gpuTime = gpuTime + OpenCL::getElapsedTime(execution[i]);
+
+	Core::TimeSpan copytime2 = Core::TimeSpan::fromSeconds(0);
+    for (std::size_t i = 0; i < sizeof(copy2) / sizeof(*copy2); i++)
+		copytime2 = copytime2 + OpenCL::getElapsedTime(copy2[i]);
+
+	Core::TimeSpan copyTime = OpenCL::getElapsedTime(copy1) + copytime2;
 	Core::TimeSpan overallGpuTime = gpuTime + copyTime;
 	std::cout << "CPU Time: " << cpuTime.toString() << ", " << (count / cpuTime.getSeconds() / 1e6) << " MPixel/s" << std::endl;;
 	std::cout << "Memory copy Time: " << copyTime.toString() << std::endl;
@@ -207,8 +330,11 @@ int main(int argc, char** argv) {
 	std::cout << "GPU Time with memory copy: " << overallGpuTime.toString() << " (speedup = " << (cpuTime.getSeconds() / overallGpuTime.getSeconds()) << ", " << (count / overallGpuTime.getSeconds() / 1e6) << " MPixel/s)" << std::endl;
 
 	//////// Store GPU output image ///////////////////////////////////
-	Core::writeImagePGM("output_sobel_gpu_sumit_data.pgm", h_outputGpu, countX, countY);
-
+	Core::writeImagePGM("output_dilation_gpu_sumit_data.pgm", h_outputDilationGpu, countX, countY);
+	Core::writeImagePGM("output_erosion_gpu_sumit_data.pgm", h_outputErosionGpu, countX, countY);
+	Core::writeImagePGM("output_opening_gpu_sumit_data.pgm", h_outputOpeningGpu, countX, countY);
+	Core::writeImagePGM("output_closing_gpu_sumit_data.pgm", h_outputClosingGpu, countX, countY);
+/*
 	// Check whether results are correct
 	std::size_t errorCount = 0;
 	for (size_t i = 0; i < countX; i = i + 1) { //loop in the x-direction
@@ -235,6 +361,6 @@ int main(int argc, char** argv) {
 
 
 	std::cout << "Success" << std::endl;
-
+*/
 	return 0;
 }
