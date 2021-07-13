@@ -5,21 +5,30 @@
 
 // Read value from global array a, return 0 if outside image
 const sampler_t sampler = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
-
 float getValueImage(__read_only image2d_t a, int i, int j) {
 	 return read_imagef(a, sampler, (int2) { i, j }).x;
 }
 
-// Read value from global array a, return 0 if outside image
+//Read value from global array a, return 0 if outside vector
 float getValueGlobal(__global const float* a, size_t countX, size_t countY, int i, int j) {
 	if (i < 0 || i >= countX || j < 0 || j >= countY)
 		return 0;
 	else
 		return a[countX * j + i];
 }
+//Read value from global array b, return 0 if outside
+int getValueMask(__global const int* b, size_t row, size_t column, int i, int j)
+{
+	if (i < 0 || i >= row || j < 0 || j >= column)
+		return 0;
+	else
+		return b[j * row + i];
+
+}
 
 
-__kernel void dilation(__read_only image2d_t d_input, __global float* d_outputDilation) {
+// Dilation Kernel
+__kernel void dilation(__read_only image2d_t d_input, __global float* d_outputDilation , __global int* d_structure_element) {
 	
 	int i = get_global_id(0);
 	int j = get_global_id(1);
@@ -28,18 +37,17 @@ __kernel void dilation(__read_only image2d_t d_input, __global float* d_outputDi
 	size_t countY = get_global_size(1);
 
 	float maximum = 0.0f;
-	int structure_element[3][3] = { {0,1,0},
-									 {1,1,1},
-									 {0,1,0}
-	};
+	
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
 			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
 			const float pxVal = getValueImage(d_input, x + i, y + j);
-			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+		
+			const int mask_value = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+		    //printf("mask_value dilation %d\n", mask_value);
+			if (mask_value == 1)
 			{
 				if (maximum > pxVal)
 					maximum = maximum;
@@ -49,12 +57,14 @@ __kernel void dilation(__read_only image2d_t d_input, __global float* d_outputDi
 
 
 		}
+		
 	}
 	d_outputDilation[countX * j + i] = maximum;
 	
 }
 
-__kernel void erosion(__read_only image2d_t d_input, __global float* d_outputErosion) {
+//Erosion Kernel
+__kernel void erosion(__read_only image2d_t d_input, __global float* d_outputErosion, __global int* d_structure_element) {
 	
 	int i = get_global_id(0);
 	int j = get_global_id(1);
@@ -63,18 +73,17 @@ __kernel void erosion(__read_only image2d_t d_input, __global float* d_outputEro
 	size_t countY = get_global_size(1);
 	
 	float minimum = 1.0f;
-	int structure_element[3][3] = { {0,1,0},
-									 {1,1,1},
-									 {0,1,0}
-	};
+
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
 			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
 			const float pxVal = getValueImage(d_input, x + i, y + j);
+			int mask_value = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+			//printf("mask_value erosion %d\n", mask_value);
 			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+			if (mask_value == 1)
 			{
 				if (minimum < pxVal)
 					minimum = minimum;
@@ -88,7 +97,8 @@ __kernel void erosion(__read_only image2d_t d_input, __global float* d_outputEro
 	d_outputErosion[countX * j + i] = minimum;
 }
 
-__kernel void opening(__read_only image2d_t d_input, __global float* d_outputOpening, __global float* d_temp1) {
+// Opening kernel
+__kernel void opening(__read_only image2d_t d_input, __global float* d_outputOpening, __global float* d_temp1, __global int* d_structure_element) {
 
 	int i = get_global_id(0);
 	int j = get_global_id(1);
@@ -98,18 +108,16 @@ __kernel void opening(__read_only image2d_t d_input, __global float* d_outputOpe
 
 	float minimum = 1.0f;
 	float maximum = 0.0f;
-	int structure_element[3][3] = { {0,1,0},
-									 {1,1,1},
-									 {0,1,0}
-	};
+	
+	// Erosion Operation
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
-			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
 			const float pxVal = getValueImage(d_input, x + i, y + j);
-			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+			int mask_value = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+			
+			if (mask_value == 1)
 			{
 				if (minimum < pxVal)
 					minimum = minimum;
@@ -120,16 +128,20 @@ __kernel void opening(__read_only image2d_t d_input, __global float* d_outputOpe
 
 		}
 	}
-	d_temp1[countX * j + i] = minimum;
+	d_temp1[countX * j + i] = minimum; // store the result of erosion in temporary array. It will act as input for dilation operation
+	// global barrier
 	barrier(CLK_GLOBAL_MEM_FENCE);
+
+	// Dilation Operation
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
-			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
+			
 			const float pxVal2 = getValueGlobal(d_temp1, countX, countY, x + i, y + j);
-			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+			int mask_value2 = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+			
+			if (mask_value2 == 1)
 			{
 				if (maximum > pxVal2)
 					maximum = maximum;
@@ -145,7 +157,8 @@ __kernel void opening(__read_only image2d_t d_input, __global float* d_outputOpe
 	
 }
 
-__kernel void closing(__read_only image2d_t d_input, __global float* d_outputClosing, __global float* d_temp2) {
+// Kernel Closing  
+__kernel void closing(__read_only image2d_t d_input, __global float* d_outputClosing, __global float* d_temp2, __global int* d_structure_element) {
 
 	int i = get_global_id(0);
 	int j = get_global_id(1);
@@ -155,19 +168,16 @@ __kernel void closing(__read_only image2d_t d_input, __global float* d_outputClo
 
 	float minimum = 1.0f;
 	float maximum = 0.0f;
-	int structure_element[3][3] = { {0,1,0},
-									 {1,1,1},
-									 {0,1,0}
-	};
 
+	// Dilation Operation
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
-			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
 			const float pxVal2 = getValueImage(d_input, x + i, y + j);
-			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+			int mask_value = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+			
+			if (mask_value == 1)
 			{
 				if (maximum > pxVal2)
 					maximum = maximum;
@@ -178,26 +188,72 @@ __kernel void closing(__read_only image2d_t d_input, __global float* d_outputClo
 
 		}
 	}
+	//store the result of dilation in temporary array. It will act as input for erosion operation
 	d_temp2[countX * j + i] = maximum;
-	barrier(CLK_GLOBAL_MEM_FENCE);
+	barrier(CLK_GLOBAL_MEM_FENCE); // global barrier
+	// Erosion Operation 
 	for (int x = -1; x <= 1; x++)
 	{
 		for (int y = -1; y <= 1; y++)
 		{
-			//const float pxVal = read_imagef(d_input, sampler, (int2)(x+i, y+j)).x;
 			const float pxVal = getValueGlobal(d_temp2, countX, countY, x + i, y + j);
-			//	printf("pixel value for co-ordinates %d, %d is %f\n", x + i, y + j, pxVal);
-			if (structure_element[x + 1][y + 1] == 1)
+			int mask_value2 = getValueMask(d_structure_element, 3, 3, x + 1, y + 1);
+			if (mask_value2 == 1)
 			{
 				if (minimum < pxVal)
 					minimum = minimum;
 				else
 					minimum = pxVal;
 			}
-
-
-		}
+         }
 	}
 	d_outputClosing[countX * j + i] = minimum;
 
+}
+
+// Kenel for Gaussian filter (Gaussian mask dimension 3x3) 
+__kernel void gaussian1(__read_only image2d_t d_input, __global float* d_outputGaussianGpu, __global float* d_gaussianMask)  {
+	int i = get_global_id(0);
+	int j = get_global_id(1);
+
+	size_t countX = get_global_size(0);
+	size_t countY = get_global_size(1);
+	
+	float sum = 0.0; 
+	int msize = 3;
+	
+	for (int x = -1; x <= 1; x++)
+		{
+			for (int y = -1; y <= 1; y++)
+				{
+					float pixelValue = getValueImage(d_input, x + i, y + j);
+					sum += (pixelValue) * getValueGlobal(d_gaussianMask, (size_t)msize, (size_t)msize, x+1,y+1) ;
+				}
+			}
+	d_outputGaussianGpu[j * countX + i] = sum;
+			
+}
+// Kenel for Gaussian filter (Gaussian mask dimension 5x5) 
+__kernel void gaussian2(__read_only image2d_t d_input, __global float* d_outputGaussianGpu, __global float* d_gaussianMask) {
+	int i = get_global_id(0);
+	int j = get_global_id(1);
+
+	size_t countX = get_global_size(0);
+	size_t countY = get_global_size(1);
+	
+	float sum = 0.0;
+	int msize = 5;
+	
+	for (int x = -2; x <= 2; x++)
+	{
+		for (int y = -2; y <= 2; y++)
+		{
+			
+			float pixelValue = getValueImage(d_input, x + i, y + j);
+			sum += (pixelValue)*getValueGlobal(d_gaussianMask, (size_t)msize, (size_t)msize, x + 2, y + 2);
+			
+         }
+	}
+	d_outputGaussianGpu[j * countX + i] = sum;
+	
 }
